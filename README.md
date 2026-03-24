@@ -19,86 +19,327 @@ Documentacao arquitetural completa do projeto Tech Challenge FIAP - Sistema de G
 
 Visao geral da arquitetura de nuvem, incluindo APIs, banco de dados e monitoramento.
 
-**Arquivo:** [diagrams/diagrama-componentes.drawio](diagrams/diagrama-componentes.drawio)
+```mermaid
+flowchart TB
+    subgraph Internet
+        Cliente[Cliente/App Frontend]
+    end
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    Oracle Cloud Infrastructure (OCI)                         │
-│                                                                              │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │                        OKE Cluster                                    │   │
-│  │                                                                       │   │
-│  │   ┌─────────────┐    ┌─────────────┐    ┌─────────────────────────┐  │   │
-│  │   │   Kong      │    │  PHP App    │    │   Datadog Agent         │  │   │
-│  │   │   Gateway   │───>│  + Nginx    │    │   (Monitoramento)       │  │   │
-│  │   └──────┬──────┘    └──────┬──────┘    └─────────────────────────┘  │   │
-│  │          │                  │                                         │   │
-│  └──────────┼──────────────────┼─────────────────────────────────────────┘   │
-│             │                  │                                             │
-│             ▼                  ▼                                             │
-│  ┌──────────────────┐  ┌──────────────────┐                                  │
-│  │ Oracle Function  │  │ OCI MySQL        │                                  │
-│  │ (auth-cpf)       │──│ HeatWave         │                                  │
-│  └──────────────────┘  └──────────────────┘                                  │
-└─────────────────────────────────────────────────────────────────────────────┘
+    subgraph OCI[Oracle Cloud Infrastructure - eu-paris-1]
+        subgraph VCN[VCN 10.0.0.0/16]
+            subgraph OKE[OKE Cluster - tech-challenge]
+                subgraph NSStaging[Namespace: staging]
+                    KongS[Kong Gateway]
+                    AppS[PHP App + Nginx]
+                    HPAS[HPA 3-8]
+                end
+                subgraph NSProd[Namespace: production]
+                    KongP[Kong Gateway]
+                    AppP[PHP App + Nginx]
+                    HPAP[HPA 4-20]
+                end
+                subgraph NSMon[Namespace: monitoring]
+                    Datadog[Datadog Agent]
+                end
+            end
+        end
+
+        subgraph Serverless[Oracle Functions]
+            AuthFn[auth-cpf\nNode.js 18]
+        end
+
+        subgraph Database[OCI MySQL HeatWave]
+            MySQL[(MySQL 8.0\n11 tabelas)]
+        end
+    end
+
+    subgraph External[Servicos Externos]
+        DatadogCloud[Datadog Cloud\nDashboards + Alertas]
+        GitHub[GitHub Actions\nCI/CD]
+    end
+
+    Cliente -->|HTTPS| KongS
+    Cliente -->|HTTPS| KongP
+    KongS -->|/api/v1/*| AppS
+    KongP -->|/api/v1/*| AppP
+    KongS -->|/auth/cpf| AuthFn
+    KongP -->|/auth/cpf| AuthFn
+    AppS -->|3306| MySQL
+    AppP -->|3306| MySQL
+    AuthFn -->|3306| MySQL
+    Datadog -->|metrics/logs| DatadogCloud
+    GitHub -->|deploy| OKE
+    GitHub -->|terraform| MySQL
 ```
 
 ### Diagrama de Sequencia - Autenticacao por CPF
 
 Fluxo completo de autenticacao usando CPF como identificador.
 
-**Arquivo:** [diagrams/diagrama-sequencia-autenticacao.drawio](diagrams/diagrama-sequencia-autenticacao.drawio)
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Cliente
+    participant K as Kong Gateway
+    participant F as Oracle Function
+    participant DB as MySQL
+    participant JWT as JWT Library
 
-```
-Cliente        Kong          Oracle Function      MySQL         JWT
-   │             │                  │               │            │
-   │─POST /auth/cpf────────────────>│               │            │
-   │             │                  │               │            │
-   │             │    Valida API Key│               │            │
-   │             │    Valida CPF    │               │            │
-   │             │                  │──SELECT──────>│            │
-   │             │                  │<──Client──────│            │
-   │             │                  │               │            │
-   │             │                  │──jwt.sign─────────────────>│
-   │             │                  │<──token───────────────────│
-   │             │                  │               │            │
-   │<──200 {token, client}──────────│               │            │
+    C->>K: POST /api/v1/auth/cpf<br/>x-api-key: xxx<br/>{cpf: "529.982.247-25"}
+
+    K->>K: Verifica Rate Limit<br/>(100 req/min)
+    K->>F: Invoke Function
+
+    F->>F: validateAPIKey()<br/>(constant-time comparison)
+
+    alt API Key inválida
+        F-->>C: 401 Unauthorized<br/>{error: "API Key invalida"}
+    end
+
+    F->>F: validateCPF()<br/>- Remove caracteres<br/>- Valida 11 dígitos<br/>- Calcula verificadores
+
+    alt CPF inválido
+        F-->>C: 400 Bad Request<br/>{error: "CPF invalido"}
+    end
+
+    F->>DB: SELECT id, name, cpf, status<br/>FROM clients<br/>WHERE cpf = ? AND status = 'active'
+    DB-->>F: [{id, name, cpf, status}]
+
+    alt Cliente não encontrado
+        F-->>C: 404 Not Found<br/>{error: "Cliente nao encontrado"}
+    end
+
+    F->>JWT: jwt.sign(payload, secret)<br/>payload: {iss, sub, cpf, name, role}
+    JWT-->>F: eyJhbGciOiJIUzI1NiIs...
+
+    F-->>C: 200 OK<br/>{token, type: "Bearer", expires_in: 3600, client}
 ```
 
 ### Diagrama de Sequencia - Ordens de Servico
 
 Fluxo de criacao e transicao de status das ordens.
 
-**Arquivo:** [diagrams/diagrama-sequencia-ordens.drawio](diagrams/diagrama-sequencia-ordens.drawio)
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Cliente
+    participant K as Kong
+    participant Ctrl as Controller
+    participant UC as UseCase
+    participant Repo as Repository
+    participant DB as MySQL
+    participant Log as Logger/Datadog
 
-**Maquina de Estados:**
+    rect rgb(232, 245, 233)
+        Note over C,Log: FLUXO 1: Criar Ordem de Servico
+    end
+
+    C->>K: POST /api/v1/service-orders<br/>Authorization: Bearer JWT
+    K->>K: Valida JWT
+    K->>Ctrl: Forward Request
+
+    Ctrl->>Ctrl: Valida body<br/>(client_id, vehicle_id, services, parts)
+
+    Ctrl->>Repo: findById(client_id)
+    Repo->>DB: SELECT * FROM clients WHERE id = ?
+    DB-->>Repo: Client
+    Repo-->>Ctrl: Client entity
+
+    Note over Ctrl,Repo: Repete para Vehicle, Services, Parts
+
+    Ctrl->>UC: execute(ServiceOrder)
+    UC->>UC: Cria ServiceOrder<br/>status = 'received'<br/>Gera order_number
+    UC->>Repo: save(order)
+    Repo->>DB: INSERT INTO service_orders...
+    DB-->>Repo: OK
+    Repo-->>UC: Saved
+    UC-->>Ctrl: Order created
+
+    Ctrl->>Log: logger.info('Ordem criada',<br/>{order_id, order_number, client_id})
+    Log->>Log: Envia para Datadog
+
+    Ctrl-->>C: 201 Created<br/>{id, order_number, status, ...}
+
+    rect rgb(255, 243, 205)
+        Note over C,Log: FLUXO 2: Alterar Status
+    end
+
+    C->>Ctrl: PATCH /service-orders/{id}/status<br/>{status: "in_diagnostic"}
+    Ctrl->>UC: TransitionStatusUseCase.execute()
+    UC->>UC: Valida transicao<br/>(state machine)
+    UC->>Repo: save() + saveStatusHistory()
+    Repo->>DB: UPDATE + INSERT status_history
+    DB-->>Repo: OK
+
+    Ctrl->>Log: logger.info('Status alterado',<br/>{order_id, previous, new})
+
+    Ctrl-->>C: 200 OK {updated order}
 ```
-received -> in_diagnostic -> awaiting_approval -> in_execution -> finished -> delivered
-                                   │
-                                   └──> cancelled (rejeitado)
+
+### Maquina de Estados - OrderStatus
+
+```mermaid
+stateDiagram-v2
+    [*] --> received: Ordem criada
+
+    received --> in_diagnostic: Iniciar diagnostico
+    in_diagnostic --> awaiting_approval: Enviar orcamento
+
+    awaiting_approval --> in_execution: Cliente aprova
+    awaiting_approval --> cancelled: Cliente rejeita
+
+    in_execution --> finished: Servico concluido
+    finished --> delivered: Veiculo entregue
+
+    delivered --> [*]
+    cancelled --> [*]
+
+    note right of received: Status inicial
+    note right of awaiting_approval: Aguarda decisao cliente
+    note right of cancelled: Fim (rejeitado)
+    note right of delivered: Fim (sucesso)
 ```
 
 ### Diagrama Entidade-Relacionamento (ER)
 
 Modelo relacional completo com 11 tabelas.
 
-**Arquivo:** [diagrams/diagrama-er.drawio](diagrams/diagrama-er.drawio)
+```mermaid
+erDiagram
+    clients ||--o{ vehicles : possui
+    clients ||--o{ service_orders : solicita
+    clients ||--o{ notifications : recebe
 
-```
-┌─────────┐     ┌──────────┐     ┌────────────────┐
-│ clients │────<│ vehicles │     │ service_orders │
-└────┬────┘     └────┬─────┘     └───────┬────────┘
-     │               │                   │
-     │               └───────────────────┤
-     │                                   │
-     └───────────────────────────────────┤
-                                         │
-     ┌───────────┬───────────────────────┼───────────────────┐
-     │           │                       │                   │
-     ▼           ▼                       ▼                   ▼
-┌─────────┐ ┌─────────┐   ┌──────────────────────┐  ┌─────────────────────┐
-│services │ │  parts  │   │service_order_services│  │ service_order_parts │
-└─────────┘ └─────────┘   └──────────────────────┘  └─────────────────────┘
+    vehicles ||--o{ service_orders : associado
+
+    service_orders ||--o{ service_order_services : contem
+    service_orders ||--o{ service_order_parts : contem
+    service_orders ||--o{ service_order_status_history : registra
+    service_orders ||--o{ notifications : gera
+    service_orders ||--o{ part_reservations : reserva
+
+    services ||--o{ service_order_services : incluido
+    parts ||--o{ service_order_parts : incluido
+    parts ||--o{ part_reservations : reservado
+
+    clients {
+        int id PK
+        string name
+        string cpf UK
+        string cnpj UK
+        string email
+        string phone
+        text address
+        timestamp created_at
+        timestamp updated_at
+    }
+
+    vehicles {
+        int id PK
+        string plate UK
+        string brand
+        string model
+        int year
+        string color
+        int client_id FK
+        timestamp created_at
+        timestamp updated_at
+    }
+
+    service_orders {
+        int id PK
+        string order_number UK
+        int client_id FK
+        int vehicle_id FK
+        string status
+        text description
+        text diagnostic_notes
+        int quotation_total_in_cents
+        timestamp quotation_approved_at
+        boolean cancelled
+        timestamp created_at
+        timestamp updated_at
+    }
+
+    services {
+        int id PK
+        string name
+        text description
+        int price_in_cents
+        int estimated_duration_minutes
+        boolean active
+        timestamp created_at
+    }
+
+    parts {
+        int id PK
+        string name
+        string code UK
+        text description
+        int price_in_cents
+        int stock_quantity
+        int minimum_stock
+        boolean active
+        timestamp created_at
+    }
+
+    service_order_services {
+        int id PK
+        int service_order_id FK
+        int service_id FK
+        int quantity
+        int unit_price_in_cents
+        int subtotal_in_cents
+    }
+
+    service_order_parts {
+        int id PK
+        int service_order_id FK
+        int part_id FK
+        int quantity
+        int unit_price_in_cents
+        int subtotal_in_cents
+    }
+
+    service_order_status_history {
+        int id PK
+        int service_order_id FK
+        string status
+        text notes
+        timestamp changed_at
+    }
+
+    notifications {
+        int id PK
+        int client_id FK
+        int service_order_id FK
+        string type
+        string event
+        string subject
+        text message
+        string status
+        timestamp sent_at
+    }
+
+    part_reservations {
+        int id PK
+        int service_order_id FK
+        int part_id FK
+        int quantity
+        string status
+        timestamp reserved_at
+        timestamp expires_at
+    }
+
+    users {
+        int id PK
+        string name
+        string email UK
+        string password_hash
+        string role
+        boolean active
+        timestamp created_at
+    }
 ```
 
 ---
@@ -156,6 +397,46 @@ Registros de decisoes arquiteturais permanentes.
 
 ---
 
+## Arquitetura DDD - Camadas
+
+```mermaid
+flowchart TB
+    subgraph Presentation[Camada de Apresentacao]
+        Controllers[Controllers REST]
+        Middleware[Auth Middleware]
+    end
+
+    subgraph Application[Camada de Aplicacao]
+        UseCases[Use Cases]
+        DTOs[DTOs]
+    end
+
+    subgraph Domain[Camada de Dominio]
+        Entities[Entities]
+        Enums[Enums]
+        Interfaces[Repository Interfaces]
+        DomainServices[Domain Services]
+    end
+
+    subgraph Infrastructure[Camada de Infraestrutura]
+        Repositories[MySQL Repositories]
+        External[External Services]
+        Logger[Datadog Logger]
+    end
+
+    Presentation --> Application
+    Application --> Domain
+    Infrastructure --> Domain
+    Application -.-> Infrastructure
+
+    style Domain fill:#e1f5fe
+    style Application fill:#fff3e0
+    style Presentation fill:#e8f5e9
+    style Infrastructure fill:#fce4ec
+```
+
+---
+
 ## Stack Tecnologica
 
 ### Aplicacao
@@ -194,6 +475,46 @@ Registros de decisoes arquiteturais permanentes.
 | Pipelines | GitHub Actions |
 | Registry | Oracle Container Registry (OCIR) |
 | Deploy | Terraform + kubectl |
+
+---
+
+## Pipeline CI/CD
+
+```mermaid
+flowchart LR
+    subgraph Developer
+        Code[Codigo]
+    end
+
+    subgraph GitHub
+        Push[Push/PR]
+        Actions[GitHub Actions]
+    end
+
+    subgraph Pipeline[Pipeline CI/CD]
+        Lint[Lint & Test]
+        Build[Build Docker]
+        Push2[Push OCIR]
+        TFPlan[Terraform Plan]
+        TFApply[Terraform Apply]
+    end
+
+    subgraph OCI[Oracle Cloud]
+        OCIR[Container Registry]
+        OKE[Kubernetes Cluster]
+    end
+
+    Code --> Push
+    Push --> Actions
+    Actions --> Lint
+    Lint --> Build
+    Build --> Push2
+    Push2 --> OCIR
+    Actions --> TFPlan
+    TFPlan --> TFApply
+    TFApply --> OKE
+    OCIR --> OKE
+```
 
 ---
 
