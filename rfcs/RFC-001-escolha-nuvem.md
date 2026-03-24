@@ -81,7 +81,7 @@ Escolhemos **Oracle Cloud Infrastructure (OCI)** devido ao:
 ## Consequencias
 
 ### Positivas
-- Zero custo para ambiente de staging e demonstracao
+- Zero custo para ambiente de demonstracao e desenvolvimento
 - MySQL gerenciado com alta disponibilidade
 - Kubernetes nativo (OKE)
 - Functions serverless integradas

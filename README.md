@@ -28,15 +28,10 @@ flowchart TB
     subgraph OCI[Oracle Cloud Infrastructure - eu-paris-1]
         subgraph VCN[VCN 10.0.0.0/16]
             subgraph OKE[OKE Cluster - tech-challenge]
-                subgraph NSStaging[Namespace: staging]
-                    KongS[Kong Gateway]
-                    AppS[PHP App + Nginx]
-                    HPAS[HPA 3-8]
-                end
                 subgraph NSProd[Namespace: production]
-                    KongP[Kong Gateway]
-                    AppP[PHP App + Nginx]
-                    HPAP[HPA 4-20]
+                    Kong[Kong Gateway]
+                    App[PHP App + Nginx]
+                    HPA[HPA 4-20]
                 end
                 subgraph NSMon[Namespace: monitoring]
                     Datadog[Datadog Agent]
@@ -58,14 +53,10 @@ flowchart TB
         GitHub[GitHub Actions\nCI/CD]
     end
 
-    Cliente -->|HTTPS| KongS
-    Cliente -->|HTTPS| KongP
-    KongS -->|/api/v1/*| AppS
-    KongP -->|/api/v1/*| AppP
-    KongS -->|/auth/cpf| AuthFn
-    KongP -->|/auth/cpf| AuthFn
-    AppS -->|3306| MySQL
-    AppP -->|3306| MySQL
+    Cliente -->|HTTPS| Kong
+    Kong -->|/api/v1/*| App
+    Kong -->|/auth/cpf| AuthFn
+    App -->|3306| MySQL
     AuthFn -->|3306| MySQL
     Datadog -->|metrics/logs| DatadogCloud
     GitHub -->|deploy| OKE

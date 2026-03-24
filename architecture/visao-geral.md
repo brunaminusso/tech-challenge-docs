@@ -94,7 +94,6 @@ Developer -> Push -> GitHub Actions -> Build -> Test -> Push Image -> Terraform 
 ```
 
 **Ambientes:**
-- `develop` branch -> Staging namespace
 - `main/master` branch -> Production namespace
 
 ## Escalabilidade
@@ -103,13 +102,12 @@ Developer -> Push -> GitHub Actions -> Build -> Test -> Push Image -> Terraform 
 
 | Ambiente | Min | Max | CPU Target | Memory Target |
 |----------|-----|-----|------------|---------------|
-| Staging | 3 | 8 | 70% | 75% |
 | Production | 4 | 20 | 60% | 70% |
 
 **Node Pool (OKE):**
 - Shape: VM.Standard.A1.Flex (ARM)
 - 1 node x 1 OCPU x 6GB (Free Tier)
-- Namespaces separados para staging/production
+- Namespace production isolado
 
 ## Seguranca
 
